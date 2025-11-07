@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Opencast Subtitle Search
 // @namespace    https://github.com/san-e
-// @version      1.1
+// @version      1.2
 // @description  Add a subtitle search box below the player. Clicking a subtitle jumps to the corresponding timecode. For when you remember the prof said something, but not when.
 // @author       Tim Jarzev
 // @include      https://tuwel.tuwien.ac.at/mod/opencast/*
@@ -49,6 +49,7 @@ setTimeout((function() {
             response.text().then(function(raw_vtt_subtitles) { // bullshit
     var stripped_vtt = stripVTT(raw_vtt_subtitles);
     const container = document.createElement('div');
+    container.id = "sub-search-container";
     container.innerHTML = `
     <style>
         body {
