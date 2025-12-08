@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Opencast AI Summary
 // @namespace    https://github.com/san-e/
-// @version      1.0
+// @version      1.1
 // @description  Adds AI summaries below lecture recordings
 // @author       Tim Julian Jarzev
 // @include      https://tuwel.tuwien.ac.at/mod/opencast/*
