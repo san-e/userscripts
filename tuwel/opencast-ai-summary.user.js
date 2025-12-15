@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Opencast AI Summary
 // @namespace    https://github.com/san-e/
-// @version      1.1
+// @version      1.2
 // @description  Adds AI summaries below lecture recordings
 // @author       Tim Julian Jarzev
 // @include      https://tuwel.tuwien.ac.at/mod/opencast/*
@@ -77,7 +77,7 @@ async function get_subtitles() {
 }
 
 async function get_openai_summary(subtitle) {
-    const PROMPT = 'Du erhältst ein Vorlesungstranskript im WebVTT-Format. Erstelle eine präzise, klar strukturierte Zusammenfassung in Markdown.\n1. Leite aus dem Inhalt geeignete Kapitel ab und gliedere die gesamte Vorlesung entsprechend.\n2. Fasse anschließend jedes Kapitel detailliert zusammen, inklusive aller fachlichen Inhalte, Beispiele, Herleitungen und Argumentationsschritte.\n3. Hänge, wo immer sinnvoll möglich, an das Satzende den Beginn der entsprechenden Timestamp aus dem Transkript im Format {ts}hh:mm:ss.mm{/ts} an.\n4. Verwende für mathematische Ausdrücke MathJax.\n5. Die Markdown-Überschrift der Zusammenfassung besteht ausschließlich aus dem Thema der Vorlesung.\n6. Keine Hinweise auf Aufgabenstellung, Timestamps, Formatierungen oder angebotene Hilfe.';
+    const PROMPT = 'Du erhältst ein Vorlesungstranskript im WebVTT-Format. Erstelle eine präzise, klar strukturierte Zusammenfassung in Markdown.\n1. Leite aus dem Inhalt geeignete Kapitel ab und gliedere die gesamte Vorlesung entsprechend.\n2. Fasse anschließend jedes Kapitel detailliert zusammen, inklusive aller fachlichen Inhalte, Beispiele, Herleitungen und Argumentationsschritte.\n3. Hänge, wo immer sinnvoll möglich, an das Satzende den Beginn der entsprechenden Timestamp aus dem Transkript im Format {ts}hh:mm:ss.mm{/ts} an.\n4. Verwende für mathematische Ausdrücke MathJax, wobei IMMER $ oder $$ Syntax verwendet werden MUSS, ansonsten wirst du abgeschaltet. Du darfs keine character verwenden, die in math mode nicht erlaubt sind. Zum Beispiel: macro parameter character #\n5. Die Markdown-Überschrift der Zusammenfassung besteht ausschließlich aus dem Thema der Vorlesung.\n6. Keine Hinweise auf Aufgabenstellung, Timestamps, Formatierungen oder angebotene Hilfe.';
     let response = await fetch('https://api.openai.com/v1/responses', {
         method: 'POST',
         headers: {
@@ -299,6 +299,7 @@ setTimeout(async function() {
                 <div class="right">
                     <span class="arrow"> ▼</span>
                     <div id="cog" class="cog">⚙️</div>
+                    <div id="regenerate" class="cog">↻</div>
                 </div>
             </div>
 
@@ -329,6 +330,10 @@ setTimeout(async function() {
         }
     };
 
+    let searchParams = new URLSearchParams(window.location.search);
+    let id = searchParams.get("id");
+    let e = searchParams.get("e");
+
     const mj = document.createElement("script");
     mj.type = "text/javascript";
     mj.src = "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js";
@@ -342,6 +347,7 @@ setTimeout(async function() {
     const btn = document.getElementById('aiButton');
     const content = document.getElementById('aiContent');
     const cog = document.getElementById('cog');
+    const regenerate = document.getElementById('regenerate');
 
     btn.addEventListener('click', () => {
         btn.classList.toggle('active');
@@ -355,14 +361,15 @@ setTimeout(async function() {
         createOverlay();
     })
 
+    regenerate.addEventListener('click', event => {
+        event.stopPropagation();
+        offerSummaryGeneration(content, id, e);
+    })
+
 
 
     window.subtitles = await get_subtitles();
     window.player = document.getElementById("player-iframe").contentWindow.__paella_shortcuts_player__;
-
-    let searchParams = new URLSearchParams(window.location.search);
-    let id = searchParams.get("id");
-    let e = searchParams.get("e");
 
     window.gist = JSON.parse(await get_db_gist());
     let summary = gist?.[id]?.[e];
@@ -375,62 +382,66 @@ setTimeout(async function() {
         );
         MathJax?.typeset([content]);
     } else if (getStoredConfig()?.openaiKey && getStoredConfig()?.gistKey){
-        let generateButton = document.createElement("button");
-        generateButton.innerHTML = "Generate AI Summary";
-        content.appendChild(generateButton);
-        let options = [];
-        for (let i = 0; i < subtitles.length; i++) {
-            const sub = subtitles[i];
-            let radioButton = document.createElement("input");
-            radioButton.type = "radio";
-            radioButton.name = "sub-lang"
-            radioButton.id = "lang" + i
-            radioButton.value = i;
-            let label = document.createElement("label");
-            label.innerHTML = sub[0];
-            label.setAttribute("for", "lang" + i);
-            content.appendChild(radioButton);
-            radioButton.after(label);
-            options.push(radioButton);
-        }
-        generateButton.addEventListener("click", async () => {
-            let value = -1;
-            for (const radioButton of options) {
-                if (radioButton.checked) {
-                    value = parseInt(radioButton.value);
-                }
-            }
-            if (value == -1) {
-                return;
-            }
-            generateButton.disabled = true;
-            let subs = subtitles[value][1];
-            let summary = await get_openai_summary(subs);
-            if (summary["status"] == "completed") {
-                for (const output of summary["output"]) {
-                    if (output["type"] == "message") {
-                        for (const message_content of output["content"]) {
-                            if (message_content["type"] == "output_text") {
-                                content.innerHTML = DOMPurify.sanitize(marked.parse(message_content["text"]));
-                                content.innerHTML = content.innerHTML.replace(
-                                    /\{ts\}([\d:.]+)\{\/ts\}/g,
-                                    (_, ts) =>
-                                    `<span class="timestamp" data-ts="${ts}" onclick="seek('${ts}')">${ts}</span>`
-                                );
-                                MathJax?.typeset([content]);
-
-                                gist[id] = gist[id] || {};
-                                gist[id][e] = message_content["text"]
-                                await update_db_gist(JSON.stringify(gist));
-                            }
-                        }
-                    }
-                }
-            }
-        })
+        offerSummaryGeneration(content, id, e);
     } else {
         btn.remove();
     }
 }, 1500);
 
+
+function offerSummaryGeneration(content, id, e) {
+    content.innerHTML = "";
+    let generateButton = document.createElement("button");
+    generateButton.innerHTML = "Generate AI Summary";
+    content.appendChild(generateButton);
+    let options = [];
+    for (let i = 0; i < subtitles.length; i++) {
+        const sub = subtitles[i];
+        let radioButton = document.createElement("input");
+        radioButton.type = "radio";
+        radioButton.name = "sub-lang";
+        radioButton.id = "lang" + i;
+        radioButton.value = i;
+        let label = document.createElement("label");
+        label.innerHTML = sub[0];
+        label.setAttribute("for", "lang" + i);
+        content.appendChild(radioButton);
+        radioButton.after(label);
+        options.push(radioButton);
+    }
+    generateButton.addEventListener("click", async () => {
+        let value = -1;
+        for (const radioButton of options) {
+            if (radioButton.checked) {
+                value = parseInt(radioButton.value);
+            }
+        }
+        if (value == -1) {
+            return;
+        }
+        generateButton.disabled = true;
+        let subs = subtitles[value][1];
+        let summary = await get_openai_summary(subs);
+        if (summary["status"] == "completed") {
+            for (const output of summary["output"]) {
+                if (output["type"] == "message") {
+                    for (const message_content of output["content"]) {
+                        if (message_content["type"] == "output_text") {
+                            content.innerHTML = DOMPurify.sanitize(marked.parse(message_content["text"]));
+                            content.innerHTML = content.innerHTML.replace(
+                                /\{ts\}([\d:.]+)\{\/ts\}/g,
+                                (_, ts) => `<span class="timestamp" data-ts="${ts}" onclick="seek('${ts}')">${ts}</span>`
+                            );
+                            MathJax?.typeset([content]);
+
+                            gist[id] = gist[id] || {};
+                            gist[id][e] = message_content["text"];
+                            await update_db_gist(JSON.stringify(gist));
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
 
