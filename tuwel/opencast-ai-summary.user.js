@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Opencast AI Summary
 // @namespace    https://github.com/san-e/
-// @version      1.2
+// @version      1.3
 // @description  Adds AI summaries below lecture recordings
 // @author       Tim Julian Jarzev
 // @include      https://tuwel.tuwien.ac.at/mod/opencast/*
@@ -29,6 +29,24 @@ function parseTimecode(timecode) {
     return h * 60 * 60 + m * 60 + s + ms;
 }
 
+function escapeLatex(markdown) {
+  // Helper function to escape special characters
+  const escapeChars = (str) =>
+    str.replace(/[\\"'$`]/g, '\\$&'); // escape \ " ' $ `
+
+  // Match $$...$$ first (block math)
+  markdown = markdown.replace(/\$\$([\s\S]+?)\$\$/g, (_, content) => {
+    return `$$${escapeChars(content)}$$`;
+  });
+
+  // Match $...$ (inline math), but not $$...$$
+  markdown = markdown.replace(/(?<!\$)\$([^$\n]+?)\$(?!\$)/g, (_, content) => {
+    return `$${escapeChars(content)}$`;
+  });
+
+  return markdown;
+}
+
 function seek(seconds) {
     window.player.videoContainer.streamProvider.setCurrentTime(parseTimecode(seconds));
 }
@@ -42,7 +60,7 @@ async function get_db_gist() {
         }
     });
     let text = await response.json();
-    return new TextDecoder().decode(base64ToBytes(text["files"]["summary_db.json"]["content"]));
+    return LZString.decompressFromEncodedURIComponent(text["files"]["summary_db.json"]["content"]);
 }
 
 async function update_db_gist(text) {
@@ -58,7 +76,7 @@ async function update_db_gist(text) {
             "description": "wub",
             "files":{
                 "summary_db.json":{
-                    "content": bytesToBase64(new TextEncoder().encode(text))
+                    "content": LZString.compressToEncodedURIComponent(text)
                 }
             }
         })
@@ -77,7 +95,17 @@ async function get_subtitles() {
 }
 
 async function get_openai_summary(subtitle) {
-    const PROMPT = 'Du erhältst ein Vorlesungstranskript im WebVTT-Format. Erstelle eine präzise, klar strukturierte Zusammenfassung in Markdown.\n1. Leite aus dem Inhalt geeignete Kapitel ab und gliedere die gesamte Vorlesung entsprechend.\n2. Fasse anschließend jedes Kapitel detailliert zusammen, inklusive aller fachlichen Inhalte, Beispiele, Herleitungen und Argumentationsschritte.\n3. Hänge, wo immer sinnvoll möglich, an das Satzende den Beginn der entsprechenden Timestamp aus dem Transkript im Format {ts}hh:mm:ss.mm{/ts} an.\n4. Verwende für mathematische Ausdrücke MathJax, wobei IMMER $ oder $$ Syntax verwendet werden MUSS, ansonsten wirst du abgeschaltet. Du darfs keine character verwenden, die in math mode nicht erlaubt sind. Zum Beispiel: macro parameter character #\n5. Die Markdown-Überschrift der Zusammenfassung besteht ausschließlich aus dem Thema der Vorlesung.\n6. Keine Hinweise auf Aufgabenstellung, Timestamps, Formatierungen oder angebotene Hilfe.';
+    const PROMPT = `Du erhältst ein Vorlesungstranskript im WebVTT-Format. Erstelle eine präzise, klar strukturierte Zusammenfassung in Markdown.
+    1. Leite aus dem Inhalt geeignete Kapitel ab und gliedere die gesamte Vorlesung entsprechend.
+    2. Fasse anschließend jedes Kapitel detailliert zusammen, inklusive aller fachlichen Inhalte, Beispiele, Herleitungen und Argumentationsschritte.
+    3. Hänge, wo immer sinnvoll möglich, an das Satzende den Beginn der entsprechenden Timestamp aus dem Transkript im Format {ts}hh:mm:ss.mm{/ts} an.
+    4. Verwende für mathematische Ausdrücke IMMER KaTeX kompatiblen LaTeX Syntax, wobei du entscheiden kannst, ob display oder inline mode sinnvoller sind. Nutze folgende delimiter:
+              delimiters: [
+              {left: '$$', right: '$$', display: true},
+              {left: '$', right: '$', display: false}
+          ]
+    5. Die Markdown-Überschrift der Zusammenfassung besteht ausschließlich aus dem Thema der Vorlesung.
+    6. Keine Hinweise auf Aufgabenstellung, Timestamps, Formatierungen oder angebotene Hilfe.`;
     let response = await fetch('https://api.openai.com/v1/responses', {
         method: 'POST',
         headers: {
@@ -300,6 +328,7 @@ setTimeout(async function() {
                     <span class="arrow"> ▼</span>
                     <div id="cog" class="cog">⚙️</div>
                     <div id="regenerate" class="cog">↻</div>
+                    <div id="edit" class="cog">✏️</div>
                 </div>
             </div>
 
@@ -339,6 +368,11 @@ setTimeout(async function() {
     mj.src = "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js";
     document.head.appendChild(mj);
 
+    const lz = document.createElement("script");
+    lz.type = "text/javascript";
+    lz.src = "https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js";
+    document.head.appendChild(lz);
+
     if (document.getElementById("sub-search-container")) {
         document.getElementById("sub-search-container").before(container)
     } else {
@@ -348,45 +382,65 @@ setTimeout(async function() {
     const content = document.getElementById('aiContent');
     const cog = document.getElementById('cog');
     const regenerate = document.getElementById('regenerate');
+    const edit = document.getElementById('edit');
 
     btn.addEventListener('click', () => {
         btn.classList.toggle('active');
         content.classList.toggle('active');
     });
 
-
-
     cog.addEventListener('click', event => {
         event.stopPropagation();
         createOverlay();
-    })
+    });
 
     regenerate.addEventListener('click', event => {
         event.stopPropagation();
         offerSummaryGeneration(content, id, e);
-    })
+    });
 
+    edit.addEventListener('click', event => {
+        event.stopPropagation();
+        showEditBox(content, id, e);
+    });
 
 
     window.subtitles = await get_subtitles();
     window.player = document.getElementById("player-iframe").contentWindow.__paella_shortcuts_player__;
-
     window.gist = JSON.parse(await get_db_gist());
+    renderSummary(content, id, e);
+}, 1500);
+
+function renderSummary(content, id, e) {
     let summary = gist?.[id]?.[e];
     if (summary) {
-        content.innerHTML = DOMPurify.sanitize(marked.parse(summary));
+        content.innerHTML = DOMPurify.sanitize(marked.parse(escapeLatex(summary)));
         content.innerHTML = content.innerHTML.replace(
             /\{ts\}([\d:.]+)\{\/ts\}/g,
             (_, ts) =>
                 `<span class="timestamp" data-ts="${ts}" onclick="seek('${ts}')">${ts}</span>`
-        );
+        ).replaceAll("!!!BACK!!!", "\\");
         MathJax?.typeset([content]);
     } else if (getStoredConfig()?.openaiKey && getStoredConfig()?.gistKey){
         offerSummaryGeneration(content, id, e);
     } else {
-        btn.remove();
+        document.getElementById("aiButton").remove();
     }
-}, 1500);
+}
+
+function showEditBox(content, id, e) {
+    content.innerHTML = "";
+    const box = document.createElement("textarea");
+    box.style = "width: 100%; height: 350px;";
+    box.value = gist[id][e];
+
+    const submit = document.createElement("button");
+    submit.innerText = "Submit";
+    submit.onclick = () => { gist[id][e] = box.value; renderSummary(content, id, e); update_db_gist(JSON.stringify(gist)); }
+
+    content.appendChild(box);
+    content.appendChild(submit);
+}
 
 
 function offerSummaryGeneration(content, id, e) {
